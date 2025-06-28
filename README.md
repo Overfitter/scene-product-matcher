@@ -359,23 +359,6 @@ for i, product in enumerate(data['recommendations'], 1):
     print(f"{i}. {product['description']} ({product['confidence']:.1%})")
 ```
 
-### **5. JavaScript/React**
-```javascript
-const handleImageUpload = async (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  
-  const response = await fetch('http://localhost:8000/api/v1/match-scene?k=5', {
-    method: 'POST',
-    body: formData
-  });
-  
-  const data = await response.json();
-  console.log('Scene Analysis:', data.scene_analysis);
-  console.log('Recommendations:', data.recommendations);
-};
-```
-
 ### **6. Get Available Categories**
 ```bash
 # List all product categories
