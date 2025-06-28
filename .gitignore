@@ -1,0 +1,344 @@
+# Scene Matcher Project .gitignore
+
+# ========================================
+# Python Environment & Dependencies
+# ========================================
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+.ENV/
+pyvenv.cfg
+
+# Conda environments
+.conda/
+conda-meta/
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ========================================
+# Python Cache & Compiled Files
+# ========================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# ========================================
+# Scene Matcher Specific Files
+# ========================================
+
+# Cache directory (large embedding files)
+cache/
+.cache/
+**/cache/
+
+# Model cache (CLIP, Sentence-BERT models)
+models/
+.torch/
+~/.cache/torch/
+~/.cache/huggingface/
+~/.cache/clip/
+
+# Embeddings cache (can be large)
+*.npz
+*.pkl
+*.pickle
+embeddings/
+*embeddings*
+
+# Processed data
+processed_data/
+*_processed.csv
+*_enhanced.csv
+
+# ========================================
+# Data Files (potentially large)
+# ========================================
+
+# Product catalogs (may contain sensitive data)
+data/product-catalog.csv
+data/*catalog*.csv
+data/products/
+
+# Images (can be large)
+data/images/
+data/scenes/
+data/test_images/
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.bmp
+*.tiff
+
+# Sample data (keep small examples)
+!data/example_scene.webp
+!data/sample_catalog.csv
+
+# ========================================
+# Logs & Monitoring
+# ========================================
+
+# Log files
+logs/
+*.log
+*.log.*
+ultimate_matcher.log
+scene_matcher.log
+error.log
+access.log
+
+# Monitoring & metrics
+metrics/
+analytics/
+performance_data/
+
+# ========================================
+# Development & IDE Files
+# ========================================
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# PyCharm
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# ========================================
+# Operating System Files
+# ========================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ========================================
+# Testing & Coverage
+# ========================================
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ========================================
+# Documentation
+# ========================================
+
+# Sphinx documentation
+docs/_build/
+docs/build/
+
+# ========================================
+# Database & Secrets
+# ========================================
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables & secrets
+.env
+.env.local
+.env.*.local
+secrets/
+config/secrets.py
+*secret*
+*password*
+*api_key*
+
+# ========================================
+# Docker & Deployment
+# ========================================
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+.docker/
+
+# Kubernetes
+k8s-local/
+*.k8s.yaml
+
+# ========================================
+# Temporary & Backup Files
+# ========================================
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.#*
+#*#
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# ========================================
+# Performance & Profiling
+# ========================================
+
+# Profiling data
+*.prof
+*.profile
+profile_data/
+
+# Memory dumps
+*.hprof
+*.heap
+
+# ========================================
+# Large Model Files
+# ========================================
+
+# Pre-trained model files
+*.bin
+*.safetensors
+*.h5
+*.pb
+*.onnx
+*.tflite
+
+# Tokenizer files (if custom)
+tokenizer/
+vocab.txt
+merges.txt
+
+# ========================================
+# ML Experiment Tracking
+# ========================================
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Weights & Biases
+wandb/
+
+# TensorBoard
+runs/
+tb_logs/
+
+# ========================================
+# Package Manager Files
+# ========================================
+
+# npm (if any JS components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================================
+# Misc
+# ========================================
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Large data exports
+exports/
+dumps/
+
+# Version-specific files
+VERSION
+.version
