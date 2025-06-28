@@ -3,7 +3,7 @@
 **Transform interior scenes into curated product recommendations with enterprise-grade intelligence.**
 
 [![Confidence](https://img.shields.io/badge/LLM_Enhanced-GPT--4o-blue)](https://openai.com/gpt-4)
-[![Performance](https://img.shields.io/badge/Response_Time-%3C1s-green)](#performance)
+[![Performance](https://img.shields.io/badge/Response_Time-%3C20s-green)](#performance)
 [![Scale](https://img.shields.io/badge/Scale-100k%2B_products-orange)](#scalability)
 [![Quality](https://img.shields.io/badge/Intelligence-Enterprise_Grade-gold)](#llm-enhancement)
 
