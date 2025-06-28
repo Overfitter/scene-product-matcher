@@ -1,4 +1,4 @@
-# 🎯 Ultimate Scene-to-Product Matcher: LLM-Enhanced AI Solution
+# 🎯 Scene-to-Product Matcher: LLM + CLIP + BERT
 
 **Transform interior scenes into curated product recommendations with enterprise-grade intelligence.**
 
