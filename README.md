@@ -1,4 +1,4 @@
-# 🎯 Ultimate Scene-to-Product Matcher: Enterprise AI Solution
+# 🎯 Scene-to-Product Matcher: Enterprise AI Solution
 
 **Transform interior scenes into curated product recommendations with 75%+ confidence.**
 
