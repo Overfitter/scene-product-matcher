@@ -163,7 +163,7 @@ async def _llm_rerank_products(self, matches: List[MatchResult], scene_analysis:
 - **LLM Re-ranking Coverage**: 100% of top candidates
 - **Category Diversity**: 3+ product types per query
 - **Quality Consistency**: 100% premium products recommended
-- **Response Time**: <1s end-to-end
+- **Response Time**: <20s end-to-end
 - **Contextual Accuracy**: Sophisticated placement suggestions
 
 ### **Scalability Architecture**
