@@ -440,7 +440,7 @@ product_confidence_range = {
 ### **Environment Configuration**
 ```bash
 # Core Settings
-SCENE_MATCHER_HOST=0.0.0.0              # API host
+SCENE_MATCHER_HOST=0.0.0.0               # API host
 SCENE_MATCHER_PORT=8000                  # API port
 SCENE_MATCHER_DEBUG=false                # Debug mode
 
@@ -468,39 +468,6 @@ curl http://localhost:8000/health/metrics
 # API analytics
 curl http://localhost:8000/api/v1/analytics?days=7
 ```
-
-### **Load Balancer Configuration (Nginx)**
-```nginx
-upstream scene_matcher {
-    server 127.0.0.1:8000;
-    server 127.0.0.1:8001;
-    server 127.0.0.1:8002;
-}
-
-server {
-    listen 80;
-    server_name your-domain.com;
-    
-    location /api/ {
-        proxy_pass http://scene_matcher;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        
-        # Rate limiting
-        limit_req zone=api burst=20 nodelay;
-        
-        # Timeouts for long-running requests
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 10s;
-    }
-    
-    location /health/ {
-        proxy_pass http://scene_matcher;
-        access_log off;
-    }
-}
-```
-
 ---
 
 ## 🚀 **Next Steps & Improvements**
