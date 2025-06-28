@@ -454,75 +454,6 @@ SCENE_MATCHER_MAX_FILE_SIZE=10485760     # Max upload (10MB)
 SCENE_MATCHER_MAX_RECOMMENDATIONS=50     # Max recommendations
 ```
 
-### **Production Deployment**
-
-#### **Docker Deployment**
-```dockerfile
-# Dockerfile
-FROM python:3.9-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-RUN mkdir -p cache data logs
-
-EXPOSE 8000
-CMD ["python", "run_api.py"]
-```
-
-```bash
-# Build and run
-docker build -t scene-matcher-api .
-docker run -d \
-  --name scene-matcher \
-  -p 8000:8000 \
-  -v $(pwd)/cache:/app/cache \
-  -v $(pwd)/data:/app/data \
-  scene-matcher-api
-```
-
-#### **Kubernetes Deployment**
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: scene-matcher-api
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: scene-matcher-api
-  template:
-    spec:
-      containers:
-      - name: api
-        image: scene-matcher-api:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: SCENE_MATCHER_CATALOG_PATH
-          value: "/data/product-catalog.csv"
-        resources:
-          requests:
-            memory: "2Gi"
-            cpu: "1"
-          limits:
-            memory: "4Gi"
-            cpu: "2"
-        livenessProbe:
-          httpGet:
-            path: /health/live
-            port: 8000
-          initialDelaySeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /health/ready
-            port: 8000
-          initialDelaySeconds: 30
-```
-
 ### **Monitoring & Health Checks**
 ```bash
 # Basic health check
@@ -641,17 +572,6 @@ def create_rich_context_description(self, product):
 - **LLM Enhancement**: GPT-4V integration for human-level reasoning
 - **Real-time Learning**: Adaptive weights based on user feedback
 - **Trend Awareness**: Seasonal adjustments and social media trends
-
-### **Estimated Impact Timeline**
-
-| Phase | Timeframe | Key Features | Expected Improvement |
-|-------|-----------|--------------|---------------------|
-| **Phase 1** | 2-3 weeks | Model upgrade, Vector DB | +20% confidence, 3x speed |
-| **Phase 2** | 1-2 months | Enhanced data schema | +35% recommendation quality |
-| **Phase 3** | 1-2 months | LLM integration, ensemble | +25% confidence, human-level reasoning |
-| **Phase 4** | 2-3 months | Personalization, learning | +15% conversion rates |
-| **Phase 5** | 3-4 months | Production scale, monitoring | Million+ product support |
-
 ---
 
 ## 🔍 **Troubleshooting**
