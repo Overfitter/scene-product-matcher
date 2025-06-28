@@ -31,14 +31,33 @@ for i, rec in enumerate(results['recommendations'], 1):
 
 **Sample Output:**
 ```
-Scene: contemporary living room
-Confidence: 78.5%
+Scene: luxury living room
+Color Palette: neutral_cool (cool neutral tones with grays and whites)
 
-1. Premium ceramic vase with geometric design (Confidence: 82.1%)
-2. Sculptural elephant figurine in sophisticated styling (Confidence: 79.3%)  
-3. Modern candle holder set with clean lines (Confidence: 76.8%)
-4. Geometric serving tray for coffee table styling (Confidence: 75.2%)
-5. Abstract decorative bowl with modern appeal (Confidence: 72.9%)
+1. Premium ceramic vase pearl stripes (Confidence: 69.2%)
+   Category: statement_vases | Quality: premium | Score: 0.667
+   Materials: ['ceramic'] | Colors: ['pearl']
+   Visual: 0.687 | Text: 0.514
+
+2. Premium ceramic decorative vase silver (Confidence: 73.7%)
+   Category: statement_vases | Quality: premium | Score: 0.657
+   Materials: ['silver', 'ceramic'] | Colors: ['silver']
+   Visual: 0.645 | Text: 0.580
+
+3. Premium ceramic decorative vase silver (Confidence: 73.4%)
+   Category: statement_vases | Quality: premium | Score: 0.652
+   Materials: ['silver', 'ceramic'] | Colors: ['silver']
+   Visual: 0.638 | Text: 0.580
+
+4. Premium ceramic vase pearl (Confidence: 70.8%)
+   Category: statement_vases | Quality: premium | Score: 0.641
+   Materials: ['ceramic'] | Colors: ['pearl']
+   Visual: 0.649 | Text: 0.521
+
+5. Candleholder premium ceramic beige (Confidence: 72.4%)
+   Category: lighting_accents | Quality: premium | Score: 0.634
+   Materials: ['ceramic'] | Colors: ['beige']
+   Visual: 0.626 | Text: 0.573
 ```
 
 ---
