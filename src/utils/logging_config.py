@@ -1,20 +1,48 @@
 """
-Logging configuration - extracted from original code
+Logging configuration for Ultimate Scene Matcher
 """
 
 import logging
 import sys
-import warnings
+from datetime import datetime
+from pathlib import Path
 
-def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('ultimate_matcher.log')
-        ]
+def setup_logging(log_level: str = "INFO", log_file: str = None) -> logging.Logger:
+    """Setup logging configuration"""
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(name)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
-    warnings.filterwarnings('ignore', category=FutureWarning)
-    warnings.filterwarnings('ignore', category=UserWarning)
-    return logging.getLogger(__name__)
+    
+    # Setup root logger
+    logger = logging.getLogger()
+    logger.setLevel(getattr(logging, log_level.upper()))
+    
+    # Remove existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler (optional)
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
+    # Return logger for the main module
+    return logging.getLogger("ultimate_matcher")
+
+# Configure specific loggers to reduce noise
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("faiss").setLevel(logging.WARNING)

@@ -1,42 +1,61 @@
 """
-API Configuration using Pydantic Settings
-Environment-based configuration for different deployment scenarios
+Configuration management for Ultimate Scene Matcher API
 """
 
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from functools import lru_cache
-from pathlib import Path
+from typing import Optional
+import os
 
 class Settings(BaseSettings):
-    """API Configuration Settings"""
+    """Application settings with environment variable support"""
     
-    # API Server Settings
-    host: str = Field(default="0.0.0.0", description="API host")
-    port: int = Field(default=8000, description="API port")
-    debug: bool = Field(default=False, description="Debug mode")
+    # API Configuration
+    host: str = Field(default="0.0.0.0", env="API_HOST")
+    port: int = Field(default=8000, env="API_PORT")
+    debug: bool = Field(default=False, env="DEBUG")
     
-    # Scene Matcher Settings
-    cache_dir: str = Field(default="./cache", description="Cache directory path")
-    catalog_path: str = Field(default="./data/product-catalog.csv", description="Product catalog path")
-    batch_size: int = Field(default=64, description="Batch size for processing")
-    quality_target: float = Field(default=0.75, description="Quality target threshold")
+    # OpenAI Configuration
+    openai_api_key: str = Field(..., env="OPENAI_API_KEY")
     
-    # API Limits
-    max_file_size: int = Field(default=10 * 1024 * 1024, description="Max upload file size (10MB)")
-    max_recommendations: int = Field(default=50, description="Maximum recommendations per request")
+    # File Paths
+    catalog_path: str = Field(default="data/product-catalog.csv", env="CATALOG_PATH")
+    cache_dir: str = Field(default="./cache", env="CACHE_DIR")
     
     # Performance Settings
-    request_timeout: int = Field(default=30, description="Request timeout in seconds")
-    max_concurrent_requests: int = Field(default=10, description="Max concurrent requests")
+    max_concurrent_requests: int = Field(default=10, env="MAX_CONCURRENT_REQUESTS")
+    request_timeout: int = Field(default=30, env="REQUEST_TIMEOUT")
+    
+    # Rate Limiting
+    rate_limit_requests: int = Field(default=100, env="RATE_LIMIT_REQUESTS")
+    rate_limit_window: int = Field(default=60, env="RATE_LIMIT_WINDOW")  # seconds
+    
+    # Recommendation Settings
+    default_k: int = Field(default=5, env="DEFAULT_K")
+    max_k: int = Field(default=20, env="MAX_K")
+    
+    # Image Processing
+    max_image_size: int = Field(default=10 * 1024 * 1024, env="MAX_IMAGE_SIZE")  # 10MB
+    allowed_image_types: list = Field(
+        default=["image/jpeg", "image/jpg", "image/png", "image/webp"],
+        env="ALLOWED_IMAGE_TYPES"
+    )
     
     # Monitoring
-    enable_metrics: bool = Field(default=True, description="Enable performance metrics")
-    log_level: str = Field(default="INFO", description="Logging level")
+    enable_metrics: bool = Field(default=True, env="ENABLE_METRICS")
+    log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    
+    # CORS Settings
+    cors_origins: list = Field(default=["*"], env="CORS_ORIGINS")
+    
+    # Security
+    api_key_header: str = Field(default="X-API-Key", env="API_KEY_HEADER")
+    api_keys: Optional[list] = Field(default=None, env="API_KEYS")
     
     class Config:
         env_file = ".env"
-        env_prefix = "SCENE_MATCHER_"
+        env_file_encoding = "utf-8"
         case_sensitive = False
 
 @lru_cache()
@@ -44,25 +63,58 @@ def get_settings() -> Settings:
     """Get cached settings instance"""
     return Settings()
 
-# Development settings
-def get_dev_settings() -> Settings:
+# Environment-specific configurations
+def get_development_settings() -> Settings:
     """Development environment settings"""
-    return Settings(
-        debug=True,
-        host="127.0.0.1",
-        port=8000,
-        log_level="DEBUG",
-        batch_size=32  # Smaller for development
-    )
+    settings = get_settings()
+    settings.debug = True
+    settings.log_level = "DEBUG"
+    return settings
 
-# Production settings  
-def get_prod_settings() -> Settings:
+def get_production_settings() -> Settings:
     """Production environment settings"""
-    return Settings(
-        debug=False,
-        host="0.0.0.0",
-        port=8000,
-        log_level="INFO",
-        batch_size=128,  # Larger for production
-        max_concurrent_requests=50
-    )
+    settings = get_settings()
+    settings.debug = False
+    settings.log_level = "INFO"
+    settings.cors_origins = ["https://yourdomain.com"]  # Configure for production
+    return settings
+
+def get_test_settings() -> Settings:
+    """Test environment settings"""
+    settings = get_settings()
+    settings.debug = True
+    settings.catalog_path = "tests/test_catalog.csv"
+    settings.cache_dir = "./test_cache"
+    return settings
+
+# Validation functions
+def validate_settings(settings: Settings) -> bool:
+    """Validate settings configuration"""
+    
+    # Check required files exist
+    if not os.path.exists(settings.catalog_path):
+        raise FileNotFoundError(f"Catalog file not found: {settings.catalog_path}")
+    
+    # Validate OpenAI API key format
+    if not settings.openai_api_key.startswith("sk-"):
+        raise ValueError("Invalid OpenAI API key format")
+    
+    # Validate rate limiting
+    if settings.rate_limit_requests <= 0 or settings.rate_limit_window <= 0:
+        raise ValueError("Invalid rate limiting configuration")
+    
+    # Validate recommendation settings
+    if settings.max_k <= 0 or settings.default_k <= 0:
+        raise ValueError("Invalid recommendation settings")
+    
+    if settings.default_k > settings.max_k:
+        raise ValueError("Default k cannot be greater than max k")
+    
+    return True
+
+# Initialize settings validation on import
+try:
+    _settings = get_settings()
+    validate_settings(_settings)
+except Exception as e:
+    print(f"⚠️ Settings validation warning: {e}")

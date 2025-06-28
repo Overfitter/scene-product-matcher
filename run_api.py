@@ -1,111 +1,116 @@
 #!/usr/bin/env python3
 """
-API Runner Script
-Start the Ultimate Scene Matcher API with proper configuration
+Clean startup script for Ultimate Scene Matcher API
+Suppresses FAISS warnings and provides clean output
 """
 
-import sys
 import os
+import sys
 import logging
-import uvicorn
 from pathlib import Path
 
-# Add project paths
-project_root = Path(__file__).parent
-sys.path.append(str(project_root / "src"))
-sys.path.append(str(project_root))
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-def check_requirements():
-    """Check if all required files and directories exist"""
-    
-    required_paths = [
-        "src",
-        "data",
-        "cache"
-    ]
-    
-    missing = []
-    for path in required_paths:
-        if not (project_root / path).exists():
-            missing.append(path)
-    
-    if missing:
-        logger.error(f"Missing required paths: {missing}")
-        logger.info("Please ensure your project structure is correct:")
-        logger.info("  src/  - Scene matcher source code")
-        logger.info("  data/               - Data directory (for catalog)")
-        logger.info("  cache/              - Cache directory (will be created)")
-        return False
-    
-    return True
+# Suppress FAISS GPU warnings before any imports
+os.environ['FAISS_ENABLE_GPU'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Hide CUDA devices from FAISS
 
 def setup_environment():
-    """Setup environment variables and directories"""
+    """Setup environment and paths"""
     
-    # Create cache directory if it doesn't exist
-    cache_dir = project_root / "cache"
-    cache_dir.mkdir(exist_ok=True)
+    # Add project root to Python path
+    project_root = Path(__file__).parent.absolute()
+    sys.path.insert(0, str(project_root))
     
-    # Create logs directory
-    logs_dir = project_root / "logs"
-    logs_dir.mkdir(exist_ok=True)
-    
-    # Set environment variables if not already set
-    env_vars = {
-        "SCENE_MATCHER_CACHE_DIR": str(cache_dir),
-        "SCENE_MATCHER_CATALOG_PATH": str(project_root / "data" / "product-catalog.csv"),
-        "SCENE_MATCHER_HOST": "0.0.0.0",
-        "SCENE_MATCHER_PORT": "8000",
-        "SCENE_MATCHER_DEBUG": "false"
-    }
-    
-    for key, value in env_vars.items():
-        if key not in os.environ:
-            os.environ[key] = value
+    # Set default environment variables
+    os.environ.setdefault('CATALOG_PATH', str(project_root / 'data' / 'product-catalog.csv'))
+    os.environ.setdefault('CACHE_DIR', str(project_root / 'cache'))
+    os.environ.setdefault('API_HOST', '0.0.0.0')
+    os.environ.setdefault('API_PORT', '8000')
+    os.environ.setdefault('DEBUG', 'false')
 
-def main():
-    """Main function to start the API"""
+def check_requirements():
+    """Check if all requirements are met"""
     
-    logger.info("🚀 Starting Ultimate Scene Matcher API...")
+    # Check OpenAI API key
+    if not os.getenv('OPENAI_API_KEY'):
+        print("❌ Error: OPENAI_API_KEY environment variable is required")
+        print("💡 Set it with: export OPENAI_API_KEY='your-api-key-here'")
+        return False
+    
+    # Check catalog file
+    catalog_path = os.getenv('CATALOG_PATH')
+    if not Path(catalog_path).exists():
+        print(f"❌ Error: Catalog file not found: {catalog_path}")
+        print("💡 Make sure the product catalog CSV file exists")
+        return False
+    
+    # Test critical imports
+    try:
+        import torch
+        import clip
+        import faiss
+        import openai
+        import fastapi
+        import uvicorn
+        print("✅ All required packages available")
+        return True
+    except ImportError as e:
+        print(f"❌ Missing required package: {e}")
+        print("💡 Install with: pip install -r requirements-cpu.txt")
+        return False
+
+def start_api():
+    """Start the API with clean output"""
+    
+    print("🚀 Ultimate Scene Matcher API")
+    print("=" * 50)
+    
+    # Setup environment
+    setup_environment()
     
     # Check requirements
     if not check_requirements():
         sys.exit(1)
     
-    # Setup environment
-    setup_environment()
+    # Configure logging to suppress unwanted messages
+    logging.getLogger('faiss.loader').setLevel(logging.WARNING)
+    logging.getLogger('faiss').setLevel(logging.WARNING)
     
-    # Get configuration
-    host = os.environ.get("SCENE_MATCHER_HOST", "0.0.0.0")
-    port = int(os.environ.get("SCENE_MATCHER_PORT", "8000"))
-    debug = os.environ.get("SCENE_MATCHER_DEBUG", "false").lower() == "true"
+    # API configuration
+    host = os.getenv('API_HOST', '0.0.0.0')
+    port = int(os.getenv('API_PORT', 8000))
+    debug = os.getenv('DEBUG', 'false').lower() == 'true'
     
-    logger.info(f"🌐 Server will start on http://{host}:{port}")
-    logger.info(f"📚 API docs will be available at http://{host}:{port}/docs")
-    logger.info(f"🔍 Debug mode: {debug}")
+    print(f"🌐 Starting server on http://{host}:{port}")
+    print(f"📚 API docs available at http://{host}:{port}/docs")
+    print(f"❤️  Health check at http://{host}:{port}/health")
+    print(f"🔧 Mode: {'Debug' if debug else 'Production'}")
+    print("=" * 50)
     
-    # Start the server
     try:
+        import uvicorn
+        
+        # Configure uvicorn logging
+        log_config = uvicorn.config.LOGGING_CONFIG
+        log_config["loggers"]["uvicorn"]["level"] = "INFO"
+        log_config["loggers"]["uvicorn.access"]["level"] = "INFO"
+        
+        # Start the server
         uvicorn.run(
             "api.main:app",
             host=host,
             port=port,
             reload=debug,
-            log_level="info" if not debug else "debug",
-            access_log=True
+            workers=1,
+            log_level="info",
+            access_log=True,
+            log_config=log_config
         )
+        
     except KeyboardInterrupt:
-        logger.info("🛑 Shutting down API server...")
+        print("\n👋 Shutting down gracefully...")
     except Exception as e:
-        logger.error(f"❌ Failed to start server: {e}")
+        print(f"❌ Failed to start server: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    start_api()

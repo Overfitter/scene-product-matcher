@@ -1,200 +1,256 @@
 """
-Health Check API Endpoints
-System status and monitoring endpoints
+Health check router for Ultimate Scene Matcher API
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-import psutil
+from datetime import datetime
+import asyncio
 import time
+import psutil
 import sys
-from pathlib import Path
 
-from src.core.matcher import SceneProductMatcher
-from ..models.response_models import HealthResponse
-from ..dependencies import get_matcher_optional
-from ..config import get_settings
+from api.models.request_models import HealthCheckRequest
+from api.models.response_models import HealthCheckResponse
+from api.dependencies import (
+    check_matcher_health,
+    check_openai_health,
+    get_performance_metrics,
+    get_settings_dependency
+)
+from api.config import Settings
 
-# CREATE THE ROUTER - This was missing!
 router = APIRouter()
 
-@router.get("/", response_model=HealthResponse)
-async def health_check(matcher: SceneProductMatcher = Depends(get_matcher_optional)):
+@router.get("/", response_model=HealthCheckResponse)
+async def health_check(
+    include_detailed: bool = False,
+    check_dependencies: bool = True,
+    matcher_health: dict = Depends(check_matcher_health),
+    settings: Settings = Depends(get_settings_dependency)
+):
     """
     Basic health check endpoint
     
-    **Returns:**
-    - Service status and basic system information
-    - Scene matcher readiness status
-    - Memory usage and cache status
+    Returns the health status of the API service and its dependencies.
     """
     
-    # Check matcher status
-    matcher_ready = matcher is not None
-    cache_status = "unknown"
-    
-    if matcher_ready:
-        try:
-            # Check if embeddings are loaded
-            if hasattr(matcher, 'visual_embeddings') and matcher.visual_embeddings is not None:
-                cache_status = "loaded"
-            else:
-                cache_status = "not_loaded"
-        except:
-            cache_status = "error"
-    
-    # Get memory usage
-    memory_usage_mb = None
-    try:
-        process = psutil.Process()
-        memory_usage_mb = process.memory_info().rss / 1024 / 1024  # Convert to MB
-    except:
-        pass
-    
-    return HealthResponse(
-        status="healthy" if matcher_ready else "initializing",
-        version="1.0.0",
-        matcher_ready=matcher_ready,
-        cache_status=cache_status,
-        memory_usage_mb=memory_usage_mb
-    )
-
-@router.get("/detailed")
-async def detailed_health_check(matcher: SceneProductMatcher = Depends(get_matcher_optional)):
-    """
-    Detailed health check with comprehensive system information
-    
-    **Returns:**
-    - Detailed system metrics and configuration
-    - Model loading status and performance indicators
-    """
-    
-    settings = get_settings()
-    
-    # System information
-    system_info = {}
-    try:
-        system_info = {
-            "cpu_percent": psutil.cpu_percent(interval=1),
-            "memory_percent": psutil.virtual_memory().percent,
-            "disk_usage_percent": psutil.disk_usage('/').percent,
-            "python_version": sys.version,
-            "platform": sys.platform
-        }
-    except:
-        system_info = {"error": "Could not retrieve system information"}
-    
-    # Matcher status
-    matcher_info = {
-        "ready": False,
-        "models_loaded": False,
-        "embeddings_loaded": False,
-        "product_count": 0,
-        "cache_dir_exists": Path(settings.cache_dir).exists()
+    # Basic system health
+    system_health = {
+        "api_status": "healthy",
+        "matcher_service": "healthy" if matcher_health.get("matcher_initialized") else "unhealthy",
+        "total_products": matcher_health.get("total_products", 0),
+        "indexes_status": "ready" if matcher_health.get("indexes_built") else "not_ready"
     }
     
-    if matcher:
+    # Determine overall status
+    if not matcher_health.get("matcher_initialized") or not matcher_health.get("indexes_built"):
+        status = "unhealthy"
+    else:
+        status = "healthy"
+    
+    # Get performance metrics
+    performance = get_performance_metrics()
+    
+    response_data = {
+        "status": status,
+        "timestamp": datetime.utcnow(),
+        "version": "1.0.0",
+        "uptime_seconds": performance.get("uptime_seconds"),
+        "system_health": system_health
+    }
+    
+    # Add detailed information if requested
+    if include_detailed:
+        response_data["performance"] = performance
+        
+        # System resource information
         try:
-            matcher_info.update({
-                "ready": True,
-                "models_loaded": hasattr(matcher, 'clip_model') and matcher.clip_model is not None,
-                "embeddings_loaded": hasattr(matcher, 'visual_embeddings') and matcher.visual_embeddings is not None,
-                "product_count": len(matcher.products) if hasattr(matcher, 'products') else 0
+            memory = psutil.virtual_memory()
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            disk = psutil.disk_usage('/')
+            
+            response_data["system_health"].update({
+                "memory_usage_percent": memory.percent,
+                "memory_available_gb": memory.available / (1024**3),
+                "cpu_usage_percent": cpu_percent,
+                "disk_usage_percent": disk.percent,
+                "disk_free_gb": disk.free / (1024**3),
+                "python_version": sys.version
             })
         except Exception as e:
-            matcher_info["error"] = str(e)
+            response_data["system_health"]["resource_error"] = str(e)
     
-    # Configuration
-    config_info = {
-        "cache_dir": settings.cache_dir,
-        "batch_size": settings.batch_size,
-        "quality_target": settings.quality_target,
-        "max_file_size_mb": settings.max_file_size // (1024 * 1024),
-        "max_recommendations": settings.max_recommendations
-    }
+    # Check dependencies if requested
+    if check_dependencies:
+        dependencies = {}
+        
+        # Check OpenAI API
+        try:
+            openai_health = await asyncio.wait_for(
+                check_openai_health(settings),
+                timeout=10.0
+            )
+            dependencies["openai"] = openai_health
+            
+            # Update overall status if OpenAI is unhealthy
+            if openai_health.get("openai_api") != "healthy":
+                status = "degraded"
+                
+        except asyncio.TimeoutError:
+            dependencies["openai"] = {
+                "openai_api": "timeout",
+                "error": "Health check timed out"
+            }
+            status = "degraded"
+        except Exception as e:
+            dependencies["openai"] = {
+                "openai_api": "error",
+                "error": str(e)
+            }
+            status = "degraded"
+        
+        response_data["dependencies"] = dependencies
+        response_data["status"] = status
+    
+    return HealthCheckResponse(**response_data)
+
+@router.get("/ready", response_model=dict)
+async def readiness_check(
+    matcher_health: dict = Depends(check_matcher_health)
+):
+    """
+    Readiness probe for Kubernetes/container orchestration
+    
+    Returns 200 if the service is ready to accept requests.
+    """
+    
+    if not matcher_health.get("matcher_initialized") or not matcher_health.get("indexes_built"):
+        raise HTTPException(
+            status_code=503,
+            detail="Service not ready - matcher not initialized or indexes not built"
+        )
     
     return {
-        "status": "healthy" if matcher_info["ready"] else "initializing",
-        "timestamp": time.time(),
-        "system_info": system_info,
-        "matcher_info": matcher_info,
-        "configuration": config_info,
-        "api_version": "1.0.0"
+        "status": "ready",
+        "timestamp": datetime.utcnow().isoformat()
     }
 
-@router.get("/ready")
-async def readiness_check(matcher: SceneProductMatcher = Depends(get_matcher_optional)):
-    """
-    Kubernetes-style readiness probe
-    
-    **Returns:**
-    - Simple ready/not-ready status for load balancers
-    """
-    
-    if matcher is None:
-        raise HTTPException(status_code=503, detail="Service not ready")
-    
-    # Check if embeddings are loaded
-    if not hasattr(matcher, 'visual_embeddings') or matcher.visual_embeddings is None:
-        raise HTTPException(status_code=503, detail="Embeddings not loaded")
-    
-    return {"status": "ready"}
-
-@router.get("/live")
+@router.get("/live", response_model=dict)
 async def liveness_check():
     """
-    Kubernetes-style liveness probe
+    Liveness probe for Kubernetes/container orchestration
     
-    **Returns:**
-    - Simple alive status for health monitoring
+    Returns 200 if the service is alive (basic health check).
     """
     
-    return {"status": "alive", "timestamp": time.time()}
-
-@router.get("/metrics")
-async def get_metrics(matcher: SceneProductMatcher = Depends(get_matcher_optional)):
-    """
-    Prometheus-style metrics endpoint
-    
-    **Returns:**
-    - Key performance metrics in a structured format
-    """
-    
-    metrics = {
-        "scene_matcher_requests_total": 0,
-        "scene_matcher_errors_total": 0,
-        "scene_matcher_avg_confidence": 0.0,
-        "scene_matcher_avg_processing_time_ms": 0.0,
-        "scene_matcher_memory_usage_bytes": 0,
-        "scene_matcher_products_loaded": 0
+    return {
+        "status": "alive",
+        "timestamp": datetime.utcnow().isoformat()
     }
+
+@router.get("/detailed", response_model=HealthCheckResponse)
+async def detailed_health_check(
+    matcher_health: dict = Depends(check_matcher_health),
+    settings: Settings = Depends(get_settings_dependency)
+):
+    """
+    Detailed health check with comprehensive system information
+    """
     
-    if matcher:
-        try:
-            # Get metrics from matcher performance history
-            if hasattr(matcher, 'performance_history') and matcher.performance_history:
-                history = matcher.performance_history
-                metrics.update({
-                    "scene_matcher_requests_total": len(history),
-                    "scene_matcher_avg_confidence": sum(h.avg_confidence for h in history) / len(history),
-                    "scene_matcher_avg_processing_time_ms": sum(h.processing_time_ms for h in history) / len(history)
-                })
-            
-            # Error count
-            if hasattr(matcher, 'error_count'):
-                metrics["scene_matcher_errors_total"] = sum(matcher.error_count.values())
-            
-            # Product count
-            if hasattr(matcher, 'products'):
-                metrics["scene_matcher_products_loaded"] = len(matcher.products)
-            
-            # Memory usage
-            try:
-                process = psutil.Process()
-                metrics["scene_matcher_memory_usage_bytes"] = process.memory_info().rss
-            except:
-                pass
-                
-        except Exception as e:
-            metrics["error"] = str(e)
+    return await health_check(
+        include_detailed=True,
+        check_dependencies=True,
+        matcher_health=matcher_health,
+        settings=settings
+    )
+
+@router.get("/dependencies", response_model=dict)
+async def dependencies_health_check(
+    settings: Settings = Depends(get_settings_dependency)
+):
+    """
+    Check health of external dependencies only
+    """
     
-    return metrics
+    dependencies = {}
+    
+    # Check OpenAI API
+    try:
+        openai_health = await asyncio.wait_for(
+            check_openai_health(settings),
+            timeout=10.0
+        )
+        dependencies["openai"] = openai_health
+    except Exception as e:
+        dependencies["openai"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Check file system access
+    try:
+        import os
+        from pathlib import Path
+        
+        catalog_exists = os.path.exists(settings.catalog_path)
+        cache_writable = os.access(settings.cache_dir, os.W_OK)
+        
+        dependencies["filesystem"] = {
+            "status": "healthy" if catalog_exists and cache_writable else "unhealthy",
+            "catalog_exists": catalog_exists,
+            "cache_writable": cache_writable,
+            "catalog_path": settings.catalog_path,
+            "cache_dir": settings.cache_dir
+        }
+    except Exception as e:
+        dependencies["filesystem"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    return {
+        "dependencies": dependencies,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@router.get("/metrics", response_model=dict)
+async def performance_metrics():
+    """
+    Get current performance metrics
+    """
+    
+    metrics = get_performance_metrics()
+    
+    # Add additional metrics
+    try:
+        memory = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        
+        metrics.update({
+            "memory_usage_percent": memory.percent,
+            "cpu_usage_percent": cpu_percent,
+            "memory_available_mb": memory.available / (1024**2)
+        })
+    except Exception as e:
+        metrics["resource_error"] = str(e)
+    
+    return {
+        "metrics": metrics,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@router.get("/version", response_model=dict)
+async def version_info():
+    """
+    Get version and build information
+    """
+    
+    return {
+        "service": "Ultimate Scene Matcher API",
+        "version": "1.0.0",
+        "build_date": "2024-01-01",  # Would be set during build
+        "git_commit": "abc123",      # Would be set during build
+        "python_version": sys.version,
+        "environment": "production",  # Would be set via environment
+        "timestamp": datetime.utcnow().isoformat()
+    }

@@ -1,620 +1,536 @@
 """
-Scene Matching API Endpoints
-Main functionality for scene-to-product matching
+Scene matching router for Ultimate Scene Matcher API
 """
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from PIL import Image
-import io
+import asyncio
 import time
 import logging
-import numpy as np
 from typing import List, Optional
-import sys
-from pathlib import Path
-import requests
+import aiohttp
+from io import BytesIO
+from PIL import Image
 
-from src.core.matcher import SceneProductMatcher
-from ..models.request_models import SceneMatchRequest, AnalyticsRequest
-from ..models.response_models import (
-    SceneMatchResponse, AnalyticsResponse, QualityMetrics,
-    SceneAnalysis, ProductRecommendation, ScoreBreakdown
+from api.models.request_models import (
+    RecommendationRequest,
+    RecommendationURLRequest,
+    BatchRecommendationRequest,
+    SystemStatsRequest,
+    CatalogUpdateRequest,
+    FileUploadRecommendationRequest
 )
-from ..dependencies import get_matcher
-from ..config import get_settings
+from api.models.response_models import (
+    RecommendationResponse,
+    BatchRecommendationResponse,
+    SystemStatsResponse,
+    CatalogUpdateResponse,
+    ErrorResponse
+)
+from api.dependencies import (
+    get_matcher_service,
+    get_request_id,
+    validate_api_key,
+    rate_limit_dependency,
+    validate_k_parameter,
+    validate_and_decode_image,
+    concurrent_request_limit,
+    get_settings_dependency
+)
+from api.config import Settings
+from src.core.llm_matcher import SceneProductMatcher
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ultimate_matcher_api")
 
-@router.post("/match-scene", response_model=SceneMatchResponse)
-async def match_scene(
-    file: UploadFile = File(...),
-    k: int = Query(default=5, ge=1, le=50, description="Number of recommendations"),
-    min_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0, description="Minimum confidence"),
-    categories_filter: Optional[str] = Query(default=None, description="Comma-separated category filters"),
-    include_analytics: bool = Query(default=True, description="Include quality metrics"),
-    matcher: SceneProductMatcher = Depends(get_matcher)
+@router.post("/recommend-upload", response_model=RecommendationResponse)
+async def get_recommendations_from_upload(
+    # File upload
+    file: UploadFile = File(..., description="Scene image file (JPEG, PNG, WebP)"),
+    
+    # Form parameters
+    k: Optional[int] = Form(default=5, description="Number of recommendations (1-20)"),
+    room_type: Optional[str] = Form(default=None, description="Room type hint"),
+    style_preference: Optional[str] = Form(default=None, description="Style preference"),
+    enable_llm_reranking: Optional[bool] = Form(default=True, description="Enable LLM re-ranking"),
+    include_reasoning: Optional[bool] = Form(default=True, description="Include reasoning"),
+    
+    # Dependencies
+    matcher: SceneProductMatcher = Depends(get_matcher_service),
+    request_id: str = Depends(get_request_id),
+    _: bool = Depends(validate_api_key),
+    __: bool = Depends(rate_limit_dependency),
+    settings: Settings = Depends(get_settings_dependency)
 ):
     """
-    Get product recommendations for a scene image
+    Get scene-to-product recommendations from uploaded image file
     
-    **Parameters:**
-    - **file**: Scene image file (JPEG, PNG, WebP)
-    - **k**: Number of recommendations (1-50)
-    - **min_confidence**: Minimum confidence threshold (0.0-1.0)
-    - **categories_filter**: Filter categories (comma-separated)
-    - **include_analytics**: Include performance metrics
-    
-    **Returns:**
-    - Scene analysis (room, style, color palette)
-    - Product recommendations with confidence scores
-    - Quality metrics and performance data
+    Upload an image file directly and get product recommendations.
+    Supports JPEG, PNG, and WebP formats.
     """
     
     start_time = time.time()
-    settings = get_settings()
     
     try:
-        # Validate file
+        # Validate file type
         if not file.content_type or not file.content_type.startswith('image/'):
             raise HTTPException(
-                status_code=400,
-                detail="File must be an image (JPEG, PNG, WebP, etc.)"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be an image (JPEG, PNG, WebP)"
             )
         
-        # Check file size
+        allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported image type. Allowed: {', '.join(allowed_types)}"
+            )
+        
+        # Read and validate file size
         file_content = await file.read()
-        if len(file_content) > settings.max_file_size:
+        
+        if len(file_content) > settings.max_image_size:
             raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Maximum size: {settings.max_file_size // (1024*1024)}MB"
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Image too large. Maximum size: {settings.max_image_size / (1024*1024):.1f}MB"
             )
         
-        # Process image
+        if len(file_content) < 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Image file appears to be corrupted or too small"
+            )
+        
+        # Load and validate image
         try:
-            image = Image.open(io.BytesIO(file_content)).convert('RGB')
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image file: {str(e)}"
-            )
-        
-        # Validate image dimensions
-        if min(image.size) < 64 or max(image.size) > 4096:
-            raise HTTPException(
-                status_code=400,
-                detail="Image dimensions must be between 64x64 and 4096x4096 pixels"
-            )
-        
-        # Get recommendations
-        try:
-            results = matcher.get_ultimate_recommendations(image, k=k)
-        except Exception as e:
-            logger.error(f"Scene matching failed: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Scene matching failed: {str(e)}"
-            )
-        
-        # Process results
-        scene_analysis = SceneAnalysis(**results['scene_analysis'])
-        
-        # Filter by confidence if specified
-        recommendations = results['recommendations']
-        if min_confidence is not None:
-            recommendations = [r for r in recommendations if r['confidence'] >= min_confidence]
-        
-        # Filter by categories if specified
-        if categories_filter:
-            allowed_categories = set(cat.strip() for cat in categories_filter.split(','))
-            recommendations = [r for r in recommendations if r['category'] in allowed_categories]
-        
-        # Convert to response models
-        recommendation_objects = []
-        for rec in recommendations:
-            score_breakdown = ScoreBreakdown(
-                visual=rec['score_breakdown']['visual'],
-                text=rec['score_breakdown']['text']
-            )
+            scene_image = Image.open(BytesIO(file_content)).convert('RGB')
             
-            recommendation = ProductRecommendation(
-                id=rec['id'],
-                sku_id=rec['sku_id'],
-                score=rec['score'],
-                confidence=float(rec['confidence']),  # Convert numpy float32
-                recommendation_level=rec['recommendation_level'],
-                category=rec['category'],
-                description=rec['description'],
-                materials=rec['materials'],
-                colors=rec['colors'],
-                style_descriptors=rec['style_descriptors'],
-                size_category=rec['size_category'],
-                quality_tier=rec['quality_tier'],
-                enterprise_score=rec['enterprise_score'],
-                is_set=rec['is_set'],
-                set_count=rec['set_count'],
-                image_url=rec['image_url'],
-                placement_suggestion=rec['placement_suggestion'],
-                score_breakdown=score_breakdown
-            )
-            recommendation_objects.append(recommendation)
-        
-        # Calculate quality metrics
-        quality_metrics = None
-        if include_analytics and recommendation_objects:
-            processing_time = (time.time() - start_time) * 1000
-            
-            avg_confidence = np.mean([r.confidence for r in recommendation_objects])
-            high_confidence_count = sum(1 for r in recommendation_objects if r.confidence >= 0.65)
-            category_diversity = len(set(r.category for r in recommendation_objects))
-            
-            quality_metrics = QualityMetrics(
-                avg_confidence=float(avg_confidence),
-                high_confidence_count=high_confidence_count,
-                category_diversity=category_diversity,
-                processing_time_ms=processing_time,
-                meets_quality_targets=(
-                    avg_confidence >= 0.65 and 
-                    category_diversity >= 3 and 
-                    processing_time < 500
+            # Validate dimensions
+            if min(scene_image.size) < 32:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Image too small (minimum 32x32 pixels)"
                 )
-            )
-        
-        # Create response
-        response = SceneMatchResponse(
-            scene_analysis=scene_analysis,
-            recommendations=recommendation_objects,
-            quality_metrics=quality_metrics,
-            metadata={
-                "original_filename": file.filename,
-                "image_size": image.size,
-                "processed_recommendations": len(recommendation_objects),
-                "api_version": "1.0.0"
-            }
-        )
-        
-        logger.info(f"Scene matching completed in {(time.time() - start_time)*1000:.1f}ms")
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in scene matching: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="An unexpected error occurred during scene matching"
-        )
-
-@router.post("/match-scene-url")
-async def match_scene_url(
-    image_url: str,
-    k: int = Query(default=5, ge=1, le=50),
-    min_confidence: Optional[float] = Query(default=None, ge=0.0, le=1.0),
-    matcher: SceneProductMatcher = Depends(get_matcher)
-):
-    """
-    Get product recommendations for a scene image from URL
-    
-    **Note**: This endpoint downloads the image from the provided URL
-    """
-    
-    try:
-        # Download image with timeout
-        response = requests.get(image_url, timeout=10, stream=True)
-        response.raise_for_status()
-        
-        # Check content type
-        content_type = response.headers.get('content-type', '')
-        if not content_type.startswith('image/'):
-            raise HTTPException(
-                status_code=400,
-                detail="URL does not point to a valid image"
-            )
-        
-        # Check content length
-        content_length = response.headers.get('content-length')
-        if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB
-            raise HTTPException(
-                status_code=413,
-                detail="Image file too large (>10MB)"
-            )
-        
-        # Read image content
-        image_content = response.content
-        
-        # Process as image
-        try:
-            image = Image.open(io.BytesIO(image_content)).convert('RGB')
+            
+            if max(scene_image.size) > 4096:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Image too large (maximum 4096x4096 pixels)"
+                )
+            
         except Exception as e:
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid image file: {str(e)}"
             )
         
-        # Validate image dimensions
-        if min(image.size) < 64 or max(image.size) > 4096:
-            raise HTTPException(
-                status_code=400,
-                detail="Image dimensions must be between 64x64 and 4096x4096 pixels"
-            )
+        # Validate k parameter
+        k = validate_k_parameter(k)
         
-        # Get recommendations
-        try:
-            results = matcher.get_ultimate_recommendations(image, k=k)
-        except Exception as e:
-            logger.error(f"Scene matching failed: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Scene matching failed: {str(e)}"
-            )
+        logger.info(
+            f"Processing file upload recommendation | {request_id} | "
+            f"File: {file.filename} ({file.content_type}) | "
+            f"Size: {len(file_content)} bytes | k={k}"
+        )
         
-        # Process and return results (similar to match_scene)
-        scene_analysis = SceneAnalysis(**results['scene_analysis'])
+        # Get recommendations from matcher
+        recommendations = await matcher.get_recommendations(
+            scene_image_path=scene_image,
+            k=k
+        )
         
-        recommendations = results['recommendations']
-        if min_confidence is not None:
-            recommendations = [r for r in recommendations if r['confidence'] >= min_confidence]
+        # Add request metadata
+        recommendations['request_id'] = request_id
+        recommendations['timestamp'] = time.time()
+        recommendations['upload_info'] = {
+            'filename': file.filename,
+            'content_type': file.content_type,
+            'file_size_bytes': len(file_content),
+            'image_dimensions': f"{scene_image.width}x{scene_image.height}"
+        }
         
-        recommendation_objects = []
-        for rec in recommendations:
-            score_breakdown = ScoreBreakdown(
-                visual=rec['score_breakdown']['visual'],
-                text=rec['score_breakdown']['text']
-            )
-            
-            recommendation = ProductRecommendation(
-                id=rec['id'],
-                sku_id=rec['sku_id'],
-                score=rec['score'],
-                confidence=float(rec['confidence']),
-                recommendation_level=rec['recommendation_level'],
-                category=rec['category'],
-                description=rec['description'],
-                materials=rec['materials'],
-                colors=rec['colors'],
-                style_descriptors=rec['style_descriptors'],
-                size_category=rec['size_category'],
-                quality_tier=rec['quality_tier'],
-                enterprise_score=rec['enterprise_score'],
-                is_set=rec['is_set'],
-                set_count=rec['set_count'],
-                image_url=rec['image_url'],
-                placement_suggestion=rec['placement_suggestion'],
-                score_breakdown=score_breakdown
-            )
-            recommendation_objects.append(recommendation)
-        
-        return SceneMatchResponse(
-            scene_analysis=scene_analysis,
-            recommendations=recommendation_objects,
-            metadata={
-                "source_url": image_url,
-                "image_size": image.size,
-                "processed_recommendations": len(recommendation_objects),
-                "api_version": "1.0.0"
+        # Add request context if provided
+        if room_type or style_preference:
+            recommendations['request_context'] = {
+                'room_type_hint': room_type,
+                'style_preference': style_preference
             }
+        
+        # Process LLM re-ranking option
+        if not enable_llm_reranking:
+            for rec in recommendations['recommendations']:
+                if 'llm_insights' in rec:
+                    rec['llm_insights']['reranked'] = False
+        
+        # Remove reasoning if not requested
+        if not include_reasoning:
+            for rec in recommendations['recommendations']:
+                rec.pop('reasoning', None)
+        
+        processing_time = time.time() - start_time
+        logger.info(
+            f"Upload recommendation completed | {request_id} | "
+            f"Time: {processing_time:.3f}s | "
+            f"Results: {len(recommendations['recommendations'])}"
         )
         
-    except requests.RequestException as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to download image from URL: {str(e)}"
-        )
-    except HTTPException:
-        raise
+        return RecommendationResponse(**recommendations)
+        
     except Exception as e:
-        logger.error(f"Error processing image URL: {e}")
+        processing_time = time.time() - start_time
+        logger.error(
+            f"Upload recommendation failed | {request_id} | "
+            f"Time: {processing_time:.3f}s | Error: {str(e)}"
+        )
+        
+        if isinstance(e, HTTPException):
+            raise e
+        
         raise HTTPException(
-            status_code=500,
-            detail="Failed to process image from URL"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Upload recommendation processing failed: {str(e)}"
         )
 
-@router.get("/analytics", response_model=AnalyticsResponse)
-async def get_analytics(
-    days: int = Query(default=7, ge=1, le=90, description="Days of analytics data"),
-    matcher: SceneProductMatcher = Depends(get_matcher)
+@router.post("/recommend-url", response_model=RecommendationResponse)
+async def get_recommendations_from_url(
+    request: RecommendationURLRequest,
+    matcher: SceneProductMatcher = Depends(get_matcher_service),
+    request_id: str = Depends(get_request_id),
+    _: bool = Depends(validate_api_key),
+    __: bool = Depends(rate_limit_dependency),
+    settings: Settings = Depends(get_settings_dependency)
 ):
     """
-    Get performance analytics and metrics
+    Get scene-to-product recommendations from image URL
     
-    **Parameters:**
-    - **days**: Number of days to include in analytics (1-90)
-    
-    **Returns:**
-    - Performance metrics and trends
-    - Confidence and category distributions
-    - Error rates and quality indicators
+    Downloads an image from the provided URL and returns product recommendations.
     """
     
+    start_time = time.time()
+    
     try:
-        # Get analytics from matcher if available
-        analytics_data = {}
+        # Download image from URL
+        async with aiohttp.ClientSession() as session:
+            async with session.get(request.image_url, timeout=10) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Failed to download image: HTTP {response.status}"
+                    )
+                
+                image_data = await response.read()
+                
+                # Validate image size
+                if len(image_data) > settings.max_image_size:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Downloaded image too large"
+                    )
+                
+                # Load image
+                scene_image = Image.open(BytesIO(image_data)).convert('RGB')
         
-        # Check if matcher has performance history
-        if hasattr(matcher, 'performance_history') and matcher.performance_history:
-            history = matcher.performance_history
-            
-            # Calculate metrics from performance history
-            total_requests = len(history)
-            avg_confidence = sum(h.avg_confidence for h in history) / len(history) if history else 0.0
-            avg_processing_time = sum(h.processing_time_ms for h in history) / len(history) if history else 0.0
-            
-            # Calculate confidence distribution
-            confidence_distribution = {"premium": 0, "high": 0, "medium": 0, "low": 0}
-            for h in history:
-                if h.avg_confidence >= 0.75:
-                    confidence_distribution["premium"] += 1
-                elif h.avg_confidence >= 0.65:
-                    confidence_distribution["high"] += 1
-                elif h.avg_confidence >= 0.40:
-                    confidence_distribution["medium"] += 1
-                else:
-                    confidence_distribution["low"] += 1
-            
-            analytics_data.update({
-                "total_requests": total_requests,
-                "avg_confidence": avg_confidence,
-                "avg_processing_time_ms": avg_processing_time,
-                "confidence_distribution": confidence_distribution
-            })
+        # Validate k parameter
+        k = validate_k_parameter(request.k)
         
-        # Get error count if available
-        error_count = 0
-        if hasattr(matcher, 'error_count') and matcher.error_count:
-            error_count = sum(matcher.error_count.values())
+        logger.info(f"Processing URL recommendation request | {request_id} | URL: {request.image_url} | k={k}")
         
-        # Calculate error rate
-        total_requests = analytics_data.get("total_requests", 0)
-        error_rate = (error_count / total_requests * 100) if total_requests > 0 else 0.0
+        # Get recommendations
+        recommendations = await matcher.get_recommendations(
+            scene_image_path=scene_image,
+            k=k
+        )
         
-        # Default analytics structure with real data if available
-        default_analytics = {
-            'total_requests': analytics_data.get("total_requests", 0),
-            'avg_confidence': analytics_data.get("avg_confidence", 0.70),
-            'avg_processing_time_ms': analytics_data.get("avg_processing_time_ms", 350.0),
-            'confidence_distribution': analytics_data.get("confidence_distribution", {
-                'premium': 15,
-                'high': 35,
-                'medium': 40,
-                'low': 10
-            }),
-            'category_distribution': {
-                'statement_vases': 30,
-                'lighting_accents': 20,
-                'accent_tables': 20,
-                'sculptural_objects': 15,
-                'functional_beauty': 10,
-                'other': 5
-            },
-            'error_rate': error_rate,
-            'quality_trend': 'stable'
-        }
+        # Add request metadata
+        recommendations['request_id'] = request_id
+        recommendations['timestamp'] = time.time()
+        recommendations['source_url'] = request.image_url
         
-        return AnalyticsResponse(**default_analytics, period_days=days)
+        processing_time = time.time() - start_time
+        logger.info(f"URL recommendation completed | {request_id} | Time: {processing_time:.3f}s")
         
-    except Exception as e:
-        logger.error(f"Error getting analytics: {e}")
+        return RecommendationResponse(**recommendations)
+        
+    except aiohttp.ClientError as e:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve analytics"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to download image: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"URL recommendation failed | {request_id} | Error: {str(e)}")
+        
+        if isinstance(e, HTTPException):
+            raise e
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"URL recommendation processing failed: {str(e)}"
         )
 
-@router.get("/categories")
-async def get_categories():
-    """
-    Get available product categories
+async def _process_single_recommendation(
+    scene_request: RecommendationRequest,
+    matcher: SceneProductMatcher,
+    sub_request_id: str
+) -> RecommendationResponse:
+    """Process a single recommendation within a batch"""
     
-    **Returns:**
-    - List of available product categories with descriptions
-    """
-    
-    categories = {
-        'statement_vases': {
-            'description': 'Large decorative vases for focal points',
-            'placement': 'Coffee table, console, or floor',
-            'size_preference': ['large', 'medium'],
-            'materials': ['ceramic', 'glass', 'metal']
-        },
-        'accent_vases': {
-            'description': 'Small decorative vases for subtle accents',
-            'placement': 'Side tables or shelving',
-            'size_preference': ['small'],
-            'materials': ['ceramic', 'glass']
-        },
-        'sculptural_objects': {
-            'description': 'Artistic sculptures and figurines',
-            'placement': 'Shelving, console, or coffee table',
-            'size_preference': ['small', 'medium'],
-            'materials': ['ceramic', 'metal', 'resin', 'wood']
-        },
-        'lighting_accents': {
-            'description': 'Candles, holders, and ambient lighting',
-            'placement': 'Tables, consoles, or dining areas',
-            'size_preference': ['small', 'medium'],
-            'materials': ['metal', 'glass', 'ceramic']
-        },
-        'functional_beauty': {
-            'description': 'Decorative bowls, trays, and serving pieces',
-            'placement': 'Coffee table styling or console display',
-            'size_preference': ['small', 'medium'],
-            'materials': ['ceramic', 'wood', 'metal', 'glass']
-        },
-        'storage_style': {
-            'description': 'Stylish storage containers and boxes',
-            'placement': 'Coffee table or console organization',
-            'size_preference': ['small', 'medium'],
-            'materials': ['ceramic', 'wood', 'metal']
-        },
-        'accent_tables': {
-            'description': 'Small tables, stools, and pedestals',
-            'placement': 'Beside seating or as plant stands',
-            'size_preference': ['medium', 'large'],
-            'materials': ['wood', 'metal', 'glass']
-        },
-        'decorative_accents': {
-            'description': 'General decorative accessories',
-            'placement': 'Shelving, console, or side tables',
-            'size_preference': ['small', 'medium'],
-            'materials': ['ceramic', 'metal', 'glass', 'wood']
-        }
-    }
-    
-    return {
-        "categories": categories,
-        "total_categories": len(categories),
-        "api_version": "1.0.0"
-    }
+    try:
+        # Validate and decode image
+        scene_image = validate_and_decode_image(scene_request.image_data)
+        
+        # Get recommendations
+        recommendations = await matcher.get_recommendations(
+            scene_image_path=scene_image,
+            k=scene_request.k or 5
+        )
+        
+        # Add metadata
+        recommendations['request_id'] = sub_request_id
+        recommendations['timestamp'] = time.time()
+        
+        return RecommendationResponse(**recommendations)
+        
+    except Exception as e:
+        logger.error(f"Single recommendation failed | {sub_request_id} | Error: {str(e)}")
+        raise e
 
-@router.get("/styles")
-async def get_styles():
+@router.get("/stats", response_model=SystemStatsResponse)
+async def get_system_stats(
+    request: SystemStatsRequest = Depends(),
+    matcher: SceneProductMatcher = Depends(get_matcher_service),
+    _: bool = Depends(validate_api_key)
+):
     """
-    Get available design styles
-    
-    **Returns:**
-    - List of design styles that can be detected
-    """
-    
-    styles = {
-        'contemporary': {
-            'description': 'Modern clean lines and neutral palettes',
-            'keywords': ['geometric', 'modern', 'clean', 'simple', 'sculptural']
-        },
-        'traditional': {
-            'description': 'Classic elegant furniture with warm colors',
-            'keywords': ['classic', 'elegant', 'ornate', 'detailed', 'refined']
-        },
-        'minimalist': {
-            'description': 'Sparse decoration with essential furniture only',
-            'keywords': ['simple', 'clean', 'minimal', 'pure', 'essential']
-        },
-        'transitional': {
-            'description': 'Balanced blend of modern and traditional elements',
-            'keywords': ['balanced', 'versatile', 'blended', 'sophisticated']
-        },
-        'luxury': {
-            'description': 'Premium materials and sophisticated finishes',
-            'keywords': ['premium', 'sophisticated', 'high-end', 'elegant', 'refined']
-        },
-        'rustic': {
-            'description': 'Weathered wood and farmhouse charm',
-            'keywords': ['weathered', 'natural', 'farmhouse', 'vintage', 'authentic']
-        },
-        'bohemian': {
-            'description': 'Vibrant patterns and eclectic artistic elements',
-            'keywords': ['vibrant', 'eclectic', 'artistic', 'creative', 'layered']
-        }
-    }
-    
-    return {
-        "styles": styles,
-        "total_styles": len(styles),
-        "api_version": "1.0.0"
-    }
-
-@router.get("/color-palettes")
-async def get_color_palettes():
-    """
-    Get available color palettes
-    
-    **Returns:**
-    - List of color palettes that can be detected
-    """
-    
-    palettes = {
-        'neutral_warm': {
-            'description': 'warm neutral tones with creams and beiges',
-            'colors': ['cream', 'beige', 'warm gray', 'taupe', 'ivory', 'off-white'],
-            'harmony_score': 1.2
-        },
-        'neutral_cool': {
-            'description': 'cool neutral tones with grays and whites',
-            'colors': ['cool gray', 'white', 'silver', 'pearl', 'platinum'],
-            'harmony_score': 1.2
-        },
-        'warm_metallics': {
-            'description': 'warm metallic accents and finishes',
-            'colors': ['gold', 'brass', 'copper', 'bronze', 'amber'],
-            'harmony_score': 1.1
-        },
-        'cool_metallics': {
-            'description': 'cool metallic accents and finishes',
-            'colors': ['silver', 'chrome', 'platinum', 'steel'],
-            'harmony_score': 1.1
-        },
-        'earth_tones': {
-            'description': 'natural earth tone palette',
-            'colors': ['brown', 'tan', 'rust', 'terracotta', 'natural'],
-            'harmony_score': 1.0
-        },
-        'blues': {
-            'description': 'sophisticated blue color family',
-            'colors': ['navy', 'blue', 'teal', 'indigo', 'sapphire'],
-            'harmony_score': 1.0
-        },
-        'greens': {
-            'description': 'natural green color palette',
-            'colors': ['sage', 'green', 'emerald', 'forest', 'mint'],
-            'harmony_score': 1.0
-        }
-    }
-    
-    return {
-        "palettes": palettes,
-        "total_palettes": len(palettes),
-        "api_version": "1.0.0"
-    }
-
-@router.get("/status")
-async def get_status(matcher: SceneProductMatcher = Depends(get_matcher)):
-    """
-    Get current system status and configuration
-    
-    **Returns:**
-    - System status and matcher configuration
+    Get system statistics and performance metrics
     """
     
     try:
-        # Get matcher status
-        matcher_status = {
-            "initialized": True,
-            "models_loaded": hasattr(matcher, 'clip_model') and matcher.clip_model is not None,
-            "embeddings_loaded": hasattr(matcher, 'visual_embeddings') and matcher.visual_embeddings is not None,
-            "products_count": len(matcher.products) if hasattr(matcher, 'products') else 0
+        # Get matcher stats
+        matcher_stats = matcher.stats if hasattr(matcher, 'stats') else {}
+        
+        # System information
+        system_info = {
+            'service_name': 'Ultimate Scene Matcher API',
+            'version': '1.0.0',
+            'total_products': len(matcher.products),
+            'matcher_initialized': True,
+            'llm_reranking_enabled': True
         }
         
-        # Get performance metrics
-        performance_metrics = {}
-        if hasattr(matcher, 'performance_history') and matcher.performance_history:
-            recent_metrics = matcher.performance_history[-10:]  # Last 10 requests
-            performance_metrics = {
-                "total_requests": len(matcher.performance_history),
-                "recent_avg_confidence": sum(m.avg_confidence for m in recent_metrics) / len(recent_metrics),
-                "recent_avg_time_ms": sum(m.processing_time_ms for m in recent_metrics) / len(recent_metrics),
-                "recent_avg_quality": sum(m.quality_score for m in recent_metrics) / len(recent_metrics)
+        # Performance metrics
+        performance_metrics = None
+        if request.include_performance:
+            from api.dependencies import get_performance_metrics
+            performance_metrics = get_performance_metrics()
+        
+        # Usage statistics (simplified)
+        usage_stats = None
+        if request.include_usage:
+            usage_stats = {
+                'total_requests': matcher_stats.get('total_requests', 0),
+                'avg_response_time': matcher_stats.get('avg_response_time', 0),
+                'avg_confidence': matcher_stats.get('avg_confidence', 0)
             }
         
-        # Get configuration
-        settings = get_settings()
-        configuration = {
-            "batch_size": settings.batch_size,
-            "quality_target": settings.quality_target,
-            "max_file_size_mb": settings.max_file_size // (1024 * 1024),
-            "max_recommendations": settings.max_recommendations
-        }
+        # Resource usage
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            
+            resource_usage = {
+                'memory_usage_percent': memory.percent,
+                'memory_used_gb': memory.used / (1024**3),
+                'memory_total_gb': memory.total / (1024**3),
+                'cpu_usage_percent': cpu_percent
+            }
+        except Exception:
+            resource_usage = {'error': 'Resource monitoring unavailable'}
+        
+        return SystemStatsResponse(
+            success=True,
+            system_info=system_info,
+            performance_metrics=performance_metrics,
+            usage_stats=usage_stats,
+            resource_usage=resource_usage
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get system stats: {str(e)}"
+        )
+
+@router.post("/catalog/update", response_model=CatalogUpdateResponse)
+async def update_catalog(
+    request: CatalogUpdateRequest,
+    background_tasks: BackgroundTasks,
+    matcher: SceneProductMatcher = Depends(get_matcher_service),
+    request_id: str = Depends(get_request_id),
+    _: bool = Depends(validate_api_key),
+    settings: Settings = Depends(get_settings_dependency)
+):
+    """
+    Update the product catalog and rebuild indexes
+    
+    This is a potentially long-running operation that rebuilds the entire
+    product catalog and FAISS indexes.
+    """
+    
+    try:
+        catalog_path = request.catalog_path or settings.catalog_path
+        
+        # Validate catalog file exists
+        import os
+        if not os.path.exists(catalog_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Catalog file not found: {catalog_path}"
+            )
+        
+        logger.info(f"Starting catalog update | {request_id} | Path: {catalog_path}")
+        
+        # Add background task for catalog update
+        background_tasks.add_task(
+            _update_catalog_background,
+            matcher,
+            catalog_path,
+            request.force_rebuild,
+            request_id
+        )
+        
+        return CatalogUpdateResponse(
+            success=True,
+            message="Catalog update started in background",
+            products_processed=0,  # Will be updated in background
+            processing_time_seconds=0,
+            indexes_rebuilt=False,
+            timestamp=time.time()
+        )
+        
+    except Exception as e:
+        logger.error(f"Catalog update failed to start | {request_id} | Error: {str(e)}")
+        
+        if isinstance(e, HTTPException):
+            raise e
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start catalog update: {str(e)}"
+        )
+
+async def _update_catalog_background(
+    matcher: SceneProductMatcher,
+    catalog_path: str,
+    force_rebuild: bool,
+    request_id: str
+):
+    """Background task to update catalog"""
+    
+    try:
+        start_time = time.time()
+        logger.info(f"Background catalog update started | {request_id}")
+        
+        # Process catalog
+        products = await matcher.process_product_catalog(catalog_path)
+        
+        # Rebuild indexes
+        matcher.build_faiss_indexes(products)
+        
+        # Save indexes
+        matcher.save_indexes(str(matcher.cache_dir / "indexes"))
+        
+        processing_time = time.time() - start_time
+        
+        logger.info(
+            f"Background catalog update completed | {request_id} | "
+            f"Products: {len(products)} | Time: {processing_time:.1f}s"
+        )
+        
+    except Exception as e:
+        logger.error(f"Background catalog update failed | {request_id} | Error: {str(e)}")
+
+@router.get("/catalog/info", response_model=dict)
+async def get_catalog_info(
+    matcher: SceneProductMatcher = Depends(get_matcher_service),
+    _: bool = Depends(validate_api_key)
+):
+    """
+    Get information about the current catalog
+    """
+    
+    try:
+        total_products = len(matcher.products)
+        
+        # Category distribution
+        category_dist = {}
+        style_dist = {}
+        quality_dist = {}
+        
+        for product in matcher.products:
+            # Category distribution
+            category = product.category
+            category_dist[category] = category_dist.get(category, 0) + 1
+            
+            # Style distribution
+            style = product.style
+            style_dist[style] = style_dist.get(style, 0) + 1
+            
+            # Quality distribution
+            quality = product.quality
+            quality_dist[quality] = quality_dist.get(quality, 0) + 1
         
         return {
-            "status": "operational",
-            "matcher_status": matcher_status,
-            "performance_metrics": performance_metrics,
-            "configuration": configuration,
-            "api_version": "1.0.0",
-            "timestamp": time.time()
+            'total_products': total_products,
+            'category_distribution': category_dist,
+            'style_distribution': style_dist,
+            'quality_distribution': quality_dist,
+            'indexes_status': {
+                'visual_index_ready': matcher.visual_index is not None,
+                'text_index_ready': matcher.text_index is not None,
+                'total_vectors': total_products
+            },
+            'timestamp': time.time()
         }
         
     except Exception as e:
-        logger.error(f"Error getting status: {e}")
         raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve system status"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get catalog info: {str(e)}"
+        )
+
+@router.get("/models/info", response_model=dict)
+async def get_models_info(
+    matcher: SceneProductMatcher = Depends(get_matcher_service),
+    _: bool = Depends(validate_api_key)
+):
+    """
+    Get information about the loaded models
+    """
+    
+    try:
+        return {
+            'clip_model': 'ViT-B/32',
+            'text_model': 'sentence-transformers/paraphrase-mpnet-base-v2',
+            'llm_model': 'gpt-4o',
+            'device': matcher.device,
+            'faiss_indexes': {
+                'visual_dimension': 512,
+                'text_dimension': 768,
+                'index_type': 'IndexFlatIP'
+            },
+            'capabilities': [
+                'Scene analysis with GPT-4o vision',
+                'Visual similarity search with CLIP',
+                'Semantic similarity search',
+                'LLM-powered re-ranking',
+                'Multi-dimensional product categorization'
+            ],
+            'timestamp': time.time()
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get models info: {str(e)}"
         )
