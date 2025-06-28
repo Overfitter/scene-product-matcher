@@ -1,6 +1,6 @@
 # 🎯 Scene-to-Product Matcher: Enterprise AI Solution
 
-**Transform interior scenes into curated product recommendations with 75%+ confidence.**
+**Transform interior scenes into curated product recommendations.**
 
 [![Performance](https://img.shields.io/badge/Confidence-75%25%2B-green)](https://github.com/Overfitter/scene-product-matcher)
 [![Speed](https://img.shields.io/badge/Latency-%3C400ms-blue)](https://github.com/Overfitter/scene-product-matcher)
